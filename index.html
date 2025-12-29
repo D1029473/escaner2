@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Save and Taste</title>
+
+<!-- APP / PWA -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+
+<style>
+:root{
+  --bg:#f5f5f7;
+  --card:rgba(255,255,255,.7);
+  --text:#111;
+  --muted:#6e6e73;
+  --border:rgba(0,0,0,.1);
+  --accent:#111;
+  --radius:22px;
+  --blur:18px;
+  --scale:1;
+}
+[data-theme="dark"]{
+  --bg:#000;
+  --card:rgba(30,30,30,.7);
+  --text:#fff;
+  --muted:#aaa;
+  --border:rgba(255,255,255,.1);
+  --accent:#fff;
+}
+.brutalist{
+  --radius:0;
+  --blur:0;
+  font-family:monospace;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font-family:-apple-system,BlinkMacSystemFont,system-ui;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  transform:scale(var(--scale));
+  transform-origin:top center;
+}
+header{
+  width:100%;
+  padding:14px 16px;
+  display:flex;
+  justify-content:space-between;
+  backdrop-filter:blur(var(--blur));
+  background:var(--card);
+  border-bottom:1px solid var(--border);
+  position:sticky;
+  top:0;
+}
+header h1{
+  font-size:.75rem;
+  letter-spacing:2px;
+  margin:0;
+}
+header button{
+  border:1px solid var(--border);
+  background:transparent;
+  color:var(--text);
+  padding:6px 10px;
+  font-size:.7rem;
+  cursor:pointer;
+}
+#vision-container{
+  width:100%;
+  max-width:420px;
+  aspect-ratio:1/1;
+  background:#000;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+canvas,#image-preview{
+  width:100%;
+  height:100%;
+  object-fit:cover;
+}
+.info-card{
+  width:90%;
+  max-width:420px;
+  background:var(--card);
+  backdrop-filter:blur(var(--blur));
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  padding:20px;
+  margin:16px 0 24px;
+}
+#food-name{
+  font-size:1.2rem;
+  margin-bottom:16px;
+  display:block;
+}
+.btn{
+  width:100%;
+  padding:14px;
+  margin-bottom:10px;
+  border-radius:var(--radius);
+  border:1px solid var(--border);
+  background:transparent;
+  font-size:.95rem;
+}
+.btn-ia{
+  background:var(--accent);
+  color:var(--bg);
+  border:none;
+}
+#ai-response{
+  display:none;
+  margin-top:16px;
+  font-size:.9rem;
+  color:var(--muted);
+}
+@media(min-width:900px){:root{--scale:1.05}}
+@media(max-width:480px){:root{--scale:.95}}
+</style>
+</head>
+
+<body data-theme="light">
+
+<header>
+  <h1>SAVE AND TASTE</h1>
+  <div>
+    <button onclick="toggleTheme()">🌙</button>
+    <button onclick="toggleScale()">📱/💻</button>
+    <button onclick="toggleBrutal()">⬛</button>
+  </div>
+</header>
+
+<div id="vision-container">
+  <div id="webcam-viewer"></div>
+  <img id="image-preview" style="display:none">
+</div>
+
+<div class="info-card">
+  <span id="food-name">Iniciando…</span>
+  <button class="btn btn-ia" id="btn-ia" onclick="preguntarIA()" disabled>Obtener trucos</button>
+  <button class="btn" onclick="file.click()">Subir imagen</button>
+  <input type="file" id="file" hidden accept="image/*" onchange="handleFileUpload(event)">
+  <div id="ai-response"><span id="ai-text"></span></div>
+</div>
+
+<script>
+/* PERSISTENCIA */
+const prefs=JSON.parse(localStorage.getItem("ui")||"{}");
+if(prefs.theme) document.body.dataset.theme=prefs.theme;
+if(prefs.scale) document.documentElement.style.setProperty("--scale",prefs.scale);
+if(prefs.brutal) document.body.classList.add("brutalist");
+
+function save(){
+  localStorage.setItem("ui",JSON.stringify({
+    theme:document.body.dataset.theme,
+    scale:getComputedStyle(document.documentElement).getPropertyValue("--scale"),
+    brutal:document.body.classList.contains("brutalist")
+  }));
+}
+
+function toggleTheme(){
+  document.body.dataset.theme=document.body.dataset.theme==="dark"?"light":"dark";
+  save();
+}
+let desk=true;
+function toggleScale(){
+  document.documentElement.style.setProperty("--scale",desk?".9":"1.05");
+  desk=!desk; save();
+}
+function toggleBrutal(){
+  document.body.classList.toggle("brutalist");
+  save();
+}
+
+/* GESTOS */
+let x=0;
+addEventListener("touchstart",e=>x=e.touches[0].clientX);
+addEventListener("touchend",e=>{
+  let dx=e.changedTouches[0].clientX-x;
+  if(dx>80){document.body.dataset.theme="light";save();}
+  if(dx<-80){document.body.dataset.theme="dark";save();}
+});
+
+/* ML */
+const URL="https://teachablemachine.withgoogle.com/models/_UsIOfbEQ/";
+let model,webcam,currentFood="",isPhoto=false;
+
+async function init(){
+  model=await tmImage.load(URL+"model.json",URL+"metadata.json");
+  const s=innerWidth<500?320:400;
+  webcam=new tmImage.Webcam(s,s,false);
+  await webcam.setup({facingMode:"environment"});
+  await webcam.play();
+  webcam-viewer.appendChild(webcam.canvas);
+  food-name.innerText="Listo";
+  loop();
+}
+async function loop(){
+  if(!isPhoto){
+    webcam.update();
+    await predict(webcam.canvas);
+    requestAnimationFrame(loop);
+  }
+}
+async function predict(img){
+  const p=await model.predict(img);
+  let h=0,m="";
+  p.forEach(e=>{if(e.probability>h){h=e.probability;m=e.className}});
+  if(h>.65){
+    currentFood=m;
+    food-name.innerText=m;
+    btn-ia.disabled=false;
+  }
+}
+async function handleFileUpload(e){
+  isPhoto=true;
+  const r=new FileReader();
+  r.onload=v=>{
+    image-preview.src=v.target.result;
+    image-preview.style.display="block";
+    webcam-viewer.style.display="none";
+    image-preview.onload=()=>predict(image-preview);
+  };
+  r.readAsDataURL(e.target.files[0]);
+}
+async function preguntarIA(){
+  ai-response.style.display="block";
+  ai-text.innerText="Consultando…";
+  const r=await fetch("/api/chat",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({food:currentFood})});
+  const d=await r.json();
+  ai-text.innerText=d.generated_text||"Sin respuesta";
+}
+init();
+</script>
+</body>
+</html>
