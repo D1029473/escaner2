@@ -47,24 +47,29 @@ export default async function handler(req, res) {
         log(`Token: ${HF_TOKEN.substring(0, 6)}...${HF_TOKEN.substring(HF_TOKEN.length - 4)}`);
         log(`Longitud token: ${HF_TOKEN.length} caracteres`);
 
-        // NUEVA API de HuggingFace (formato OpenAI)
-        // Modelo gratuito con hf-inference (CPU, pero funciona)
-        const MODEL = "HuggingFaceTB/SmolLM3-3B:hf-inference";
+        // Usar proveedor GRATUITO real: Sambanova (o Together AI)
+        // Estos proveedores SÍ tienen tiers gratuitos para chat
+        const MODEL = "meta-llama/Llama-3.2-3B-Instruct";  // Sin :provider suffix
         const API_URL = "https://router.huggingface.co/v1/chat/completions";
         
         log(`Modelo: ${MODEL}`);
         log(`Endpoint: ${API_URL}`);
+        log(`Provider: auto (HF routing gratuito)`);
 
         const requestBody = {
             model: MODEL,
             messages: [
                 {
+                    role: "system",
+                    content: "Da exactamente 3 consejos breves y prácticos para conservar mejor el alimento indicado. Usa frases muy cortas. Español neutro. Sin introducción ni cierre. Sin emojis. Formato en lista numerada. Enfocado en conservación doméstica."
+                },
+                {
                     role: "user",
-                    content: `Dame 3 consejos muy cortos en español para cocinar o aprovechar: ${food}. Solo los consejos, sin introducción.`
+                    content: `${food}`
                 }
             ],
-            max_tokens: 200,
-            temperature: 0.7
+            max_tokens: 150,
+            temperature: 0.5
         };
         
         log(`Request body: ${JSON.stringify(requestBody).substring(0, 200)}...`);
@@ -155,7 +160,33 @@ export default async function handler(req, res) {
             });
         }
 
-        // Limpiar texto
+        // Limpiar texto y remover razonamiento visible
+        generatedText = generatedText.trim();
+        
+        // Detectar y eliminar "chain of thought" visible
+        // Patrones comunes: "Okay...", "Let me think...", "Hmm..."
+        const thoughtPatterns = [
+            /^(Okay|Ok|Hmm|Well|Let me think|So|Alright)[,.].*?(\n\n|\*\*)/is,
+            /^.*?let me think.*?(\n\n|\*\*)/is,
+            /^.*?vamos a ver.*?(\n\n|\d\.)/is,
+            /^.*?déjame pensar.*?(\n\n|\d\.)/is
+        ];
+        
+        for (const pattern of thoughtPatterns) {
+            if (pattern.test(generatedText)) {
+                log(`Detectado razonamiento visible, limpiando...`);
+                generatedText = generatedText.replace(pattern, '');
+                break;
+            }
+        }
+        
+        // Si empieza con texto en inglés antes de los consejos, cortarlo
+        const spanishStart = generatedText.search(/[1-3][\.\)]\s*\*\*|^[1-3][\.\)]|^-\s/m);
+        if (spanishStart > 50) {
+            log(`Cortando preámbulo largo (${spanishStart} chars)`);
+            generatedText = generatedText.substring(spanishStart);
+        }
+        
         generatedText = generatedText.trim();
         
         log(`Texto final length: ${generatedText.length}`);
